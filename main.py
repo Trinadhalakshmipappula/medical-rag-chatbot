@@ -1,16 +1,10 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from groq import Groq
-
-from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_community.docstore.in_memory import InMemoryDocstore
-from langchain_huggingface import HuggingFaceEmbeddings
-
-from sentence_transformers import CrossEncoder
-import faiss
 import os
+
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
 
 # -----------------------------
 # 1. Configure Groq API
@@ -29,73 +23,44 @@ class QueryRequest(BaseModel):
     query: str
 
 # -----------------------------
-# 4. Load Models
+# 4. Load ONLY embeddings + FAISS (no building)
 # -----------------------------
-print("Loading models...")
+print("Loading FAISS index...")
 
 embedding_model = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-mpnet-base-v2",
-    encode_kwargs={"normalize_embeddings": True}
+    model_name="sentence-transformers/all-mpnet-base-v2"
 )
 
-reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-
-# -----------------------------
-# 5. Load PDFs
-# -----------------------------
-FILE_PATH = "medical_data"
-
-loader = DirectoryLoader(
-    FILE_PATH,
-    glob="**/*.pdf",
-    loader_cls=PyPDFLoader
+vector_store = FAISS.load_local(
+    "faiss_index",   # folder you must create locally
+    embedding_model,
+    allow_dangerous_deserialization=True
 )
-
-docs = loader.load()
-print("Loaded docs:", len(docs))
-
-splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-split_docs = splitter.split_documents(docs)
-
-embedding_dim = 768
-index = faiss.IndexFlatIP(embedding_dim)
-
-vector_store = FAISS(
-    embedding_function=embedding_model,
-    index=index,
-    docstore=InMemoryDocstore(),
-    index_to_docstore_id={}
-)
-
-vector_store.add_documents(split_docs)
 
 retriever = vector_store.as_retriever(search_kwargs={"k": 5})
 
 print("RAG ready!")
 
 # -----------------------------
-# 6. Re-ranking
-# -----------------------------
-def rerank(query, docs, top_k=3):
-    pairs = [(query, doc.page_content) for doc in docs]
-    scores = reranker.predict(pairs)
-
-    ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
-    return [doc for _, doc in ranked[:top_k]]
-
-# -----------------------------
-# 7. Groq Answer
+# 5. Groq Answer
 # -----------------------------
 def generate_answer(query, context):
     try:
         prompt = f"""
+You are a medical assistant.
+
+STRICT RULES:
+- Answer ONLY from the given context
+- If the answer is NOT in the context, say: "No data found"
+- Do NOT use outside knowledge
+
 Context:
 {context}
 
 Question:
 {query}
 
-Answer in 2 lines:
+Give a detailed answer in 4-6 lines:
 """
 
         response = client.chat.completions.create(
@@ -109,8 +74,12 @@ Answer in 2 lines:
         return f"Error: {str(e)}"
 
 # -----------------------------
-# 8. API Endpoint
+# 6. API Endpoint
 # -----------------------------
+@app.get("/")
+def root():
+    return {"status": "running"}
+
 @app.post("/ask")
 def ask_question(request: QueryRequest):
     try:
@@ -118,12 +87,11 @@ def ask_question(request: QueryRequest):
 
         docs = retriever.invoke(query)
 
-        if not docs:
+        # ✅ Check if no docs found
+        if not docs or len(docs) == 0:
             return {"answer": "No data found"}
 
-        final_docs = rerank(query, docs)
-
-        context = "\n\n".join([doc.page_content for doc in final_docs])
+        context = "\n\n".join([doc.page_content for doc in docs])
 
         answer = generate_answer(query, context)
 
