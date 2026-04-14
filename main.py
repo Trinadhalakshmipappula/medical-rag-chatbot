@@ -2,14 +2,18 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from groq import Groq
 import os
+from dotenv import load_dotenv
 
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 
 # -----------------------------
-# 1. Configure Groq API
+# 1. Load environment variables
 # -----------------------------
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+load_dotenv()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+print("GROQ KEY LOADED:", GROQ_API_KEY is not None)
 
 # -----------------------------
 # 2. FastAPI App
@@ -17,13 +21,18 @@ client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 app = FastAPI(title="Medical RAG Bot with Groq")
 
 # -----------------------------
-# 3. Request Schema
+# 3. Groq Client (FIXED)
+# -----------------------------
+client = Groq(api_key=GROQ_API_KEY)
+
+# -----------------------------
+# 4. Request Schema
 # -----------------------------
 class QueryRequest(BaseModel):
     query: str
 
 # -----------------------------
-# 4. Load ONLY embeddings + FAISS (no building)
+# 5. Load Embeddings + FAISS
 # -----------------------------
 print("Loading FAISS index...")
 
@@ -32,7 +41,7 @@ embedding_model = HuggingFaceEmbeddings(
 )
 
 vector_store = FAISS.load_local(
-    "faiss_index",   # folder you must create locally
+    "faiss_index",
     embedding_model,
     allow_dangerous_deserialization=True
 )
@@ -42,7 +51,7 @@ retriever = vector_store.as_retriever(search_kwargs={"k": 5})
 print("RAG ready!")
 
 # -----------------------------
-# 5. Groq Answer
+# 6. Generate Answer (Groq)
 # -----------------------------
 def generate_answer(query, context):
     try:
@@ -50,22 +59,23 @@ def generate_answer(query, context):
 You are a medical assistant.
 
 STRICT RULES:
-- Answer ONLY from the given context
-- If the answer is NOT in the context, say: "No data found"
-- Do NOT use outside knowledge
+- Answer ONLY using the given context
+- If answer is not in context, say "No data found"
+- Keep answer clear and simple (4-6 lines)
 
 Context:
 {context}
 
 Question:
 {query}
-
-Give a detailed answer in 4-6 lines:
 """
 
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}]
+            messages=[
+                {"role": "system", "content": "You are a helpful medical assistant."},
+                {"role": "user", "content": prompt}
+            ]
         )
 
         return response.choices[0].message.content
@@ -74,7 +84,7 @@ Give a detailed answer in 4-6 lines:
         return f"Error: {str(e)}"
 
 # -----------------------------
-# 6. API Endpoint
+# 7. API Routes
 # -----------------------------
 @app.get("/")
 def root():
@@ -85,10 +95,10 @@ def ask_question(request: QueryRequest):
     try:
         query = request.query
 
+        # Retrieve relevant documents
         docs = retriever.invoke(query)
 
-        # ✅ Check if no docs found
-        if not docs or len(docs) == 0:
+        if not docs:
             return {"answer": "No data found"}
 
         context = "\n\n".join([doc.page_content for doc in docs])
