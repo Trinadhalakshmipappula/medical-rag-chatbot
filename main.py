@@ -96,9 +96,11 @@ def ask_question(request: QueryRequest):
         query = request.query
 
         # Retrieve relevant documents
-        docs = retriever.invoke(query)
+        docs = vector_store.similarity_search(query, k=5)
+        
+        print("Retrieved docs:", len(docs))
 
-        if not docs:
+        if len(docs) == 0:
             return {"answer": "No data found"}
 
         context = "\n\n".join([doc.page_content for doc in docs])

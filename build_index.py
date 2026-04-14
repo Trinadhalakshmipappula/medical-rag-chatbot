@@ -17,3 +17,6 @@ db = FAISS.from_documents(split_docs, embeddings)
 db.save_local("faiss_index")
 
 print("✅ Index created")
+docs = loader.load()
+print("Total docs loaded:", len(docs))
+print("Total chunks:", len(split_docs))
